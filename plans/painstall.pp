@@ -8,82 +8,122 @@
 #   Update existing puppet-agent versions
 
 plan simp_bolt::painstall (
-  TargetSpec $nodes,
+  Boltlib::TargetSpec $nodes,
   String     $agent_version = '5.5.14-1',
   Boolean    $update        = false
 ) {
-  # Query nodes for puppet-agent
-  $results = run_task('package::linux', $nodes, name => 'puppet-agent', action => 'status')
+  $targets = get_targets($nodes)
+  $targets.each |$target| { $target.set_var('agent_action_taken', 'none') }
 
-  # Generate set of nodes with no puppet-agent
-  $need_agent = $results.filter |$result| { $result[status] == "uninstalled" }
-  $install_subset = $need_agent.map |$result| { $result.target }
-  $ver_inst_results = run_task('facts', $install_subset)
+  # Check nodes for existing puppet-agent packages
+  $results = run_task('package::linux', $targets, name => 'puppet-agent', action => 'status').each |$result| {
+    $result.target.set_var('agent_status', $result['status'])
+    $result.target.set_var('agent_version', $result['version'])
+  }
 
-  # Generate set of nodes that require a newer puppet agent
-  $have_agent = $results.filter |$result| { $result[status] == "installed" }
-  $need_update = $have_agent.filter |$result| { versioncmp($result[version], "$agent_version") == -1 }
-  $update_subset = $need_update.map |$result| { $result.target }
-  $ver_upd_results = run_task('facts', $update_subset)
+  $install_targets = $targets.filter |$target| { $target.vars['agent_status'] == 'uninstalled' }
 
-  $r = ["6","7"]
+  # Only update if agent is installed, but older than the version we want
+  $update_targets  = $targets.filter |$target| {
+    $target.vars['agent_status'] == 'installed'
+    and versioncmp($target.vars['agent_version'], $agent_version) == -1
+  }
+
+  run_task('facts', ($install_targets + $update_targets)).each |$result| {
+    $result.target.set_var('os_family', $result['os']['family'])
+    $result.target.set_var('os_major_version', $result['os']['release']['major'])
+  }
+
+  $r = ['6','7']
   $r.each |$r| {
-    # For new installs
-    $rel_installs = $ver_inst_results.filter |$result| { $result['os']['release']['major'] == "${r}" }
-    $install_rel_subset = $rel_installs.map |$result| { $result.target }
+    $rel_targets = ($install_targets + $update_rel_targets).filter |$target| {
+      $target.vars['os_major_version'] == 'RedHat' and $target.vars['os_major_version'] == $r
+    }
+    $install_rel_targets = $rel_targets.filter |$target| { $target in $install_targets }
+    $upgrade_rel_targets = $rel_targets.filter |$target| { $target in $upgrade_targets }
 
-    # Check existing repo for adequate version
-    $repo_version = run_task('simp_bolt::payum', $install_rel_subset,
-             version => "${agent_version}.el${r}")
-    # Install agent_version if available from yum
-    $yum_tgt_rel_subset = $repo_version.filter |$result| { versioncmp($result[_output], "${agent_version}.el${r}") == 0 }
-    $install_target_rel_subset = $yum_tgt_rel_subset.map |$result| { $result.target }
-    run_task('package::linux', $install_target_rel_subset,
-             name    => 'puppet-agent',
-             version => "${agent_version}.el${r}",
-             action  => 'install')
-    # Install newer agent_version if available from yum
-    $yum_newer_rel_subset = $repo_version.filter |$result| { versioncmp($result[_output], "$agent_version.el${r}") == 1 }
-    $install_newer_rel_subset = $yum_newer_rel_subset.map |$result| { $result.target }
-    run_task('package::linux', $install_newer_rel_subset,
-             name    => 'puppet-agent',
-             action  => 'install')
+    run_task('simp_bolt::payum',  ($rel_targets), version => "${agent_version}.el${r}").each |$result| {
+      $result.target.set_var('repo_puppet_version', $result['_output'])
+    }
+
+    # For new installs
+
+    # Install $agent_version from yum if it's available
+    $yum_fresh_install_rel_targets = $install_rel_targets.filter |$target| {
+      versioncmp($target.vars['repo_puppet_version'], "${agent_version}.el${r}") == 0
+    }
+    run_task('package::linux', $yum_fresh_install_rel_targets,
+      name    => 'puppet-agent',
+      version => "${agent_version}.el${r}",
+      action  => 'install'
+    )
+
+    # NOTE: Is it really okay to just install any newer version if the one we wanted wasn't available?
+    $yum_newer_install_rel_targets = $install_rel_targets.filter |$target| {
+      versioncmp($target.vars['repo_puppet_version'], "${agent_version}.el${r}") == 1
+    }
+    run_task('package::linux', $yum_newer_install_rel_targets,
+      name    => 'puppet-agent',
+      action  => 'install'
+    )
+
     # Copy rpm file to target and install if yum does not offer a suitable version
-    $yum_no_rel_subset = $repo_version.filter |$result| { versioncmp($result[_output], "$agent_version.el${r}") == -1 }
-    $rpm_rel_subset = $yum_no_rel_subset.map |$result| { $result.target }
+    # NOTE: as long as this plan has the capability to upload and install RPMs,
+    #       there should be an option to just do that and ignore the node's yum repos
+    #       altogether.
+    $rpm_upload_targets = $repo_version.filter |$result| {
+      versioncmp($result[_output], "${agent_version}.el${r}") == -1
+    }.map |$result| { $result.target }
+
     # No need to check for rpm if yum is sufficient
-    if !empty($rpm_rel_subset) {
-      if file::exists("simp_bolt/puppet-agent-${agent_version}.el${r}.x86_64.rpm") {
-        upload_file("simp_bolt/puppet-agent-${agent_version}.el${r}.x86_64.rpm", "/var/local/puppet-agent-${agent_version}.el${r}.x86_64.rpm", $rpm_rel_subset)
-        run_command("yum localinstall -y /var/local/puppet-agent-${agent_version}.el${r}.x86_64.rpm", $rpm_rel_subset)
+    if !empty($rpm_upload_targets) {
+      $local_agent_rpm = "simp_bolt/puppet-agent-${agent_version}.el${r}.x86_64.rpm"
+      $rpm_upload_target_list = $rpm_upload_targets.map |$target| { $target.name }.join(', ')
+      if find_file($local_agent_rpm) {
+        notice("uploading puppet-agent package from '$local_agent_rpm' to ${rpm_upload_target_list}")
+        upload_file(
+          "simp_bolt/puppet-agent-${agent_version}.el${r}.x86_64.rpm",
+          "/var/local/puppet-agent-${agent_version}.el${r}.x86_64.rpm",
+          $rpm_upload_targets
+        )
+        run_command(
+          "yum localinstall -y /var/local/puppet-agent-${agent_version}.el${r}.x86_64.rpm",
+          $rpm_upload_targets
+        )
       } else {
-        out::message("no puppet-agent is available for $rpm_rel_subset")
+        warning("File at '${local_agent_rpm}' unavailable for upload to ${rpm_upload_target_list}")
       }
     }
 
-    # For updates 
-    $rel_updates = $ver_upd_results.filter |$result| { $result['os']['release']['major'] == "${r}" }
-    $update_rel_subset = $rel_updates.map |$result| { $result.target }
+    # For updates
+    $update_rel_subset = $update_targets.filter |$target| { $target.vars['os_major_version'] == $r }
+    ### $rel_updates = $ver_upd_results.filter |$result| { $result['os']['release']['major'] == $r }
+    ### $update_rel_subset = $rel_updates.map |$result| { $result.target }
     if !empty($update_rel_subset) {
       if $update {
         # Check existing repo for adequate version
-        $urepo_version = run_task('simp_bolt::payum', $update_rel_subset,
-                 version => "${agent_version}.el${r}")
+        $urepo_version = run_task('simp_bolt::payum',
+          $update_rel_subset,
+          version => "${agent_version}.el${r}"
+        )
         # Install agent_version if available from yum
-        $yum_update_subset = $urepo_version.filter |$result| { versioncmp($result[_output], "$agent_version.el${r}") == 0 }
+        $yum_update_subset = $urepo_version.filter |$result| { versioncmp($result[_output], "${agent_version}.el${r}") == 0 }
         $update_target_subset = $yum_update_subset.map |$result| { $result.target }
-        run_task('package::linux', $update_target_subset,
-                 name    => 'puppet-agent',
-                 version => "${agent_version}.el${r}",
-                 action  => 'upgrade')
+        run_task( 'package::linux',
+          $update_target_subset,
+          name    => 'puppet-agent',
+          version => "${agent_version}.el${r}",
+          action  => 'upgrade')
         # Install newer agent_version if available from yum
-        $yum_newer_subset = $urepo_version.filter |$result| { versioncmp($result[_output], "$agent_version.el${r}") == 1 }
+        $yum_newer_subset = $urepo_version.filter |$result| { versioncmp($result[_output], "${agent_version}.el${r}") == 1 }
         $update_newer_subset = $yum_newer_subset.map |$result| { $result.target }
-        run_task('package::linux', $update_newer_subset,
-                 name    => 'puppet-agent',
-                 action  => 'upgrade')
+        run_task( 'package::linux',
+          $update_newer_subset,
+          name    => 'puppet-agent',
+          action  => 'upgrade'
+        )
         # Copy rpm file to target and install
-        $yum_no_subset = $urepo_version.filter |$result| { versioncmp($result[_output], "$agent_version.el${r}") == -1 }
+        $yum_no_subset = $urepo_version.filter |$result| { versioncmp($result[_output], "${agent_version}.el${r}") == -1 }
         $rpm_update_subset = $yum_no_subset.map |$result| { $result.target }
         # No need to check for rpm if yum is sufficient
         if !empty($rpm_update_subset) {
@@ -91,11 +131,11 @@ plan simp_bolt::painstall (
             upload_file("simp_bolt/puppet-agent-${agent_version}.el${r}.x86_64.rpm", "/var/local/puppet-agent-${agent_version}.el${r}.x86_64.rpm", $rpm_update_subset)
             run_command("yum localinstall -y /var/local/puppet-agent-${agent_version}.el${r}.x86_64.rpm", $rpm_update_subset)
           } else {
-            out::message("no puppet-agent is available for update on $rpm_update_subset")
+            warning("no puppet-agent is available for update on ${rpm_update_subset.map |$target| { $target.name }.join(', ')}")
           }
         }
       } else {
-        out::message("$update_subset require updates but the update parameter is false")
+        warning("${update_subset} require updates but the update parameter is false")
       }
     }
   }
