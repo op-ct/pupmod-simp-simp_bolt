@@ -1,0 +1,53 @@
+<%-|
+  Optional[Hash]    $config_hash,
+  Boolean           $color,
+  Optional[Integer] $concurrency,
+  String            $default_transport,
+  Optional[String]  $format,
+  Optional[String]  $hiera_config,
+  Optional[String]  $inventoryfile,
+  String            $log_console_level,
+  String            $log_file,
+  Boolean           $log_file_append,
+  String            $log_file_level,
+  Optional[String]  $modulepath,
+  Hash              $transport_options
+|-%>
+# This file managed by puppet.
+# Any changes that you make will be reverted on the next puppet run.
+#
+# Bolt configuration file
+# https://puppet.com/docs/bolt/1.x/bolt_configuration_options.html
+<% if $config_hash { -%>
+<%= to_yaml($config_hash) %>
+<% } else { -%>
+---
+<%  <%  if $modulepath { -%>
+modulepath: <%= $modulepath %>
+<%   } -%>
+<%   if $color { -%>
+color: <%= $color %>
+<%   } -%>
+<%   if $concurrency { -%>
+concurrency: <%= $concurrency %>
+<%   } -%>
+<%   if $format { -%>
+format: <%= $format%>
+<%   } -%>
+<%   if $hiera_config { -%>
+hiera-config: <%= $hiera_config %>
+<%   } -%>
+<%   if $inventoryfile { -%>
+inventoryfile: <%= $inventoryfile %>
+<%   } -%>
+default_transport: <%= $default_transport %>
+
+<%= regsubst(to_yaml($transport_options), '^---$', '', 'M') %>
+
+log:
+  console:
+    level: <%= $log_console_level %>
+  <%= $log_file %>:
+    level: <%= $log_file_level %>
+    append: <%= $log_file_append %>
+<% } -%>
