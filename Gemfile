@@ -15,6 +15,7 @@ group :test do
   gem 'puppet-lint-trailing_comma-check', :require => false
   gem 'simp-rspec-puppet-facts', ENV.fetch('SIMP_RSPEC_PUPPET_FACTS_VERSION', '~> 2.2')
   gem 'simp-rake-helpers', ENV.fetch('SIMP_RAKE_HELPERS_VERSION', '~> 5.8')
+  #gem 'puppet-syntax', ENV.fetch('PUPPET_SYNTAX_VERSION', '~> 2.5.0') # 2.6.0 broke plans
 end
 
 group :development do
