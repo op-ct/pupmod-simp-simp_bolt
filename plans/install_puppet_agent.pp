@@ -39,8 +39,16 @@ plan simp_bolt::install_puppet_agent (
   if $method in ['repo', 'repo+upload'] {
     out::message( '==== YUM REPO RPM section' )
 
-    # list puppet-agent releases
+    # find matching puppet-agent release in OS package repos
     # ----------------------------------------------------------
+    # Query OS package repos for available `puppet-agent` versions and select
+    # the best match for $agent_version, trying in this order:
+    #
+    #   1. if there is a perfect match for $agent_version, take it!
+    #   2. Otherwise, use $agent_version as a SemVerRange and select the latest
+    #      matching package version
+    #   3. Otherwise, record that a suitable package wasn't available
+    #
     run_command(
       "set -o pipefail; yum list available --showduplicates puppet-agent \
           | grep -w puppet-agent | awk '{print \$2}' | sort --version-sort",
@@ -49,30 +57,39 @@ plan simp_bolt::install_puppet_agent (
       { '_catch_errors' =>  true }
     ).each |$result| {
       $target = $result.target
+
       if $result.ok {
         $yum_list = $result.value['stdout'].split("\n")
-        out::message("+++ yum_list:\n* ${$yum_list.join("\n* " )}")
+        debug("+++ yum_list:\n* ${$yum_list.join("\n* " )}")
 
-        # Find best matching $agent_version, trying in this order:
-        #
-        # 1. if there is a perfect match for $agent_version, take it
-        # 2. if $agent_version looks like a SemVerRange,
-        #    find latest match in list
-        # 3. Otherwise, record that a suitable package wasn't available
-        #
         $pkg_agent_version = "${agent_version}.el${facts($target)['os']['release']['major']}"
         if $pkg_agent_version in $yum_list {
           out::message("=== ${target.name}: EXACT OS repo match for puppet-agent ${pkg_agent_version}")
 
           $target.set_var('agent_repo_pkgver', $pkg_agent_version)
         } else {
-          out::message("=== ${target.name}: no exact OS repo match for puppet-agent ${pkg_agent_version}")
-          # TODO try agent_version as a SemVerRange
+          $agent_version_range = SemVerRange.new($agent_version)
+          $target.set_var('agent_repo_pkgver', false)
 
+          $yum_list.reverse_each |$repo_pkg_version| {
+            $repo_pkg_semver = $repo_pkg_version.regsubst(/-\d+(\.[a-z0-9_-]*)?$/,'')
+            if $repo_pkg_semver =~ $agent_version_range {
+              out::message("=== ${target.name}: SemVerRange '${agent_version_range}' matched puppet-agent '${repo_pkg_version}' in OS repo")
+              $target.set_var('agent_repo_pkgver', $repo_pkg_version)
+              break()
+            }
+          }
+          unless $target.vars['agent_repo_pkgver'] {
+            out::message( @("MSG"/L)
+            === ${target.name}: OS repos didn't provide \
+              a match for puppet-agent version '${agent_version_range}'"
+            | MSG
+            )
+          }
         }
 
       } else {
-          out::message("=== ${target.name}: yum didn't find any versions of puppet-agent")
+          out::message("=== ${target.name}: OS repos didn't provide any version of puppet-agent")
         $target.set_var('agent_repo_pkgver', false)
       }
     }
@@ -84,17 +101,22 @@ plan simp_bolt::install_puppet_agent (
     }.each |$target| {
       $result = catch_errors(['bolt/run-failure']) || {
         run_task('package::linux', $target,
-          'Install puppet-agent ${agent_version} from OS package repo',
-          name    => 'puppet-agent',
-          version =>  $target.vars['req_agent_version'],
-          action  => 'install',
+          "Install puppet-agent '${target.vars['agent_repo_pkgver']}' from OS package repo",
+          name          => 'puppet-agent',
+          version       => $target.vars['agent_repo_pkgver'],
+          action        => 'install',
+          _catch_errors => true,
         )
       }
-      $target.set_var('agent_action_taken', "install puppet-agent ${target.vars['req_agent_version']} from OS package repo'")
-      if $result =~ Error {
-        $target.set_var('agent_action_result', $result.msg)
-      } else {
+      $target.set_var(
+        'agent_action_taken',
+        "install puppet-agent '${target.vars['agent_repo_pkgver']}' from OS package repo"
+      )
+      out::message("${result}")
+      if $result.ok {
         $target.set_var('agent_action_result', $result.value)
+      } else {
+        $target.set_var('agent_action_result', $result.to_data)
       }
     }
 
@@ -113,17 +135,11 @@ plan simp_bolt::install_puppet_agent (
   out::message( '==== COMPILE RESULTS section' )
   $results = {
     'agent_version' => $agent_version,
-    'targets'       => $targets.map |$target| {
-      {
-        'name' => $target.name,
-      } + $target.vars
-
-      #.filter |$k,$v| {
-      #  $k in ['name', 'agent_action_taken', 'agent_repo_pkgver']
-      #}
-      # FIXME uncomment after making results less annoying
+    'method'        => $method,
+    'targets'       => Hash($targets.map |$target| {
+      [$target.name, $target.vars]
       ###+ $target.facts.filter |$k, $v| { $k in ['os'] }
-    }
+    })
   }
   return( $results )
 
