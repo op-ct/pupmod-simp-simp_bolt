@@ -7,11 +7,13 @@
 #
 plan simp_bolt::install_puppet_agent (
   Boltlib::TargetSpec                  $nodes,
-  Variant[SemVer,String]               $agent_version  = '5.5.14-1',
+  String                               $agent_version  = '5.5.14-1',
   Enum['repo','upload','repo+upload']  $method         = 'repo+upload',
   Boolean                              $strict_version = true,
   Boolean                              $permit_upgrade = false,
 ) {
+  $agent_version_range = SemVerRange($agent_version)
+
   # Set up inventory facts and collect Red Hat nodes
   # ------------------------------------------------
   run_plan('facts', nodes => $nodes)
@@ -33,36 +35,47 @@ plan simp_bolt::install_puppet_agent (
   # METHOD 'repo': Using OS package repositories
   # ============================================================================
   if $method in ['repo', 'repo+upload'] {
+    out::message( '==== YUM REPO RPM section' )
 
     # list puppet-agent releases
     # ----------------------------------------------------------
-    $rel_targets.each |$target| {
-      $r = $target.facts['os']['release']['major']
-      $target.set_var('req_agent_version', "${agent_version}.${r}")
-      run_command(
-        "set -o pipefail; yum list available --showduplicates puppet-agent | \
-          grep -w puppet-agent | awk '{print \$2}' | sort --version-sort",
-        $target,
-        'Find puppet-agent releases available from OS package repos',
-        { '_catch_errors' =>  true }
-      ).each |$result| {
-        if $result.ok {
-          $yum_list = $result.value['stdout'].split("\n")
-          $target.set_var('yum_list', $yum_list )
-          out::message($yum_list.join("\n* " ))
-          if $agent_version.type == 'String' {
+    run_command(
+      "set -o pipefail; yum list available --showduplicates puppet-agent \
+          | grep -w puppet-agent | awk '{print \$2}' | sort --version-sort",
+      $rel_targets,
+      'Find puppet-agent releases available from OS package repos',
+      { '_catch_errors' =>  true }
+    ).each |$result| {
+      $target = $result.target
+      if $result.ok {
+        $yum_list = $result.value['stdout'].split("\n")
+        out::message("+++ yum_list:\n* ${$yum_list.join("\n* " )}")
 
+        # Find best matching $agent_version, trying in this order:
+        #
+        # 1. if there is a perfect match for $agent_version, take it
+        # 2. if $agent_version looks like a SemVerRange,
+        #    find latest match in list
+        # 3. Otherwise, record that a suitable package wasn't available
+        #
+        if $agent_version in $yum_list {
+          out::message("=== ${target.name}: EXACT OS repo match for puppet-agent ${agent_version}")
+          $target.set_var('agent_repo_pkgver', $agent_version)
         } else {
-          $target.set_var('yum_list', false)
+          out::message("=== ${target.name}: no exact OS repo match for puppet-agent ${agent_version}")
+
         }
+
+      } else {
+          out::message("=== ${target.name}: yum didn't find any versions of puppet-agent")
+        $target.set_var('agent_repo_pkgver', false)
       }
     }
-
 
     # Installing a fresh puppet-agent
 
     $rel_targets.filter |$target| {
-      $target.vars['agent_status'] == 'uninstalled' and $strict_cmp
+      $target.vars['agent_status'] == 'uninstalled' and $target.vars['agent_repo_pkgver']
     }.each |$target| {
       $result = run_task('package::linux', $target,
         'Install puppet-agent ${agent_version} from OS package repo',
@@ -79,16 +92,17 @@ plan simp_bolt::install_puppet_agent (
       $target.vars['agent_status'] == 'installed'
         and versioncmp($target.vars['agent_version'], $agent_version) == -1
     }
-
-
-
-
-
-
-  $results = $targets.map |$target| {
-    $target.vars.filter |$k,$v| { $k in ['agent_action_taken', 'yum_list']  } + $target.facts.filter |$k, $v| { $k in ['os'] }
   }
-  return( $results )
+
+  if $method in ['upload', 'repo+upload'] {
+    out::message( '==== UPLOAD RPM section' )
+  }
+
+  # FIXME uncomment after making results less annoying
+  #$results = $targets.map |$target| {
+  #  $target.vars.filter |$k,$v| { $k in ['agent_action_taken', 'yum_list']  } + $target.facts.filter |$k, $v| { $k in ['os'] }
+  #}
+  #return( $results )
 
   ###  $el_releases = ['6','7']
   ###  $el_releases.each |$r| {
