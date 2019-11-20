@@ -28,7 +28,7 @@ plan simp_bolt::install_puppet_agent (
     action => 'status'
   ).each |$result| {
     $result.target.set_var('agent_status', $result['status'])
-    if $result['version'] {
+    unless empty($result['version']) {
       $result.target.set_var('agent_version', $result['version'])
     }
   }
@@ -82,14 +82,20 @@ plan simp_bolt::install_puppet_agent (
     $rel_targets.filter |$target| {
       $target.vars['agent_status'] == 'uninstalled' and $target.vars['agent_repo_pkgver']
     }.each |$target| {
-      $result = run_task('package::linux', $target,
-        'Install puppet-agent ${agent_version} from OS package repo',
-        name    => 'puppet-agent',
-        version =>  $target.vars['req_agent_version'],
-        action  => 'install'
-      )
+      $result = catch_errors(['bolt/run-failure']) || {
+        run_task('package::linux', $target,
+          'Install puppet-agent ${agent_version} from OS package repo',
+          name    => 'puppet-agent',
+          version =>  $target.vars['req_agent_version'],
+          action  => 'install',
+        )
+      }
       $target.set_var('agent_action_taken', "install puppet-agent ${target.vars['req_agent_version']} from OS package repo'")
-      $target.set_var('agent_action_result', $result)
+      if $result =~ Error {
+        $target.set_var('agent_action_result', $result.msg)
+      } else {
+        $target.set_var('agent_action_result', $result.value)
+      }
     }
 
     # Only update if agent is installed, but older than the version we want
