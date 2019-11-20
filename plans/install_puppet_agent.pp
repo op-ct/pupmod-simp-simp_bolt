@@ -28,7 +28,9 @@ plan simp_bolt::install_puppet_agent (
     action => 'status'
   ).each |$result| {
     $result.target.set_var('agent_status', $result['status'])
-    $result.target.set_var('agent_version', $result['version'])
+    if $result['version'] {
+      $result.target.set_var('agent_version', $result['version'])
+    }
   }
 
 
@@ -77,25 +79,25 @@ plan simp_bolt::install_puppet_agent (
 
     # Installing a fresh puppet-agent
 
-    ###    $rel_targets.filter |$target| {
-    ###      $target.vars['agent_status'] == 'uninstalled' and $target.vars['agent_repo_pkgver']
-    ###    }.each |$target| {
-    ###      $result = run_task('package::linux', $target,
-    ###        'Install puppet-agent ${agent_version} from OS package repo',
-    ###        name    => 'puppet-agent',
-    ###        version =>  $target.vars['req_agent_version'],
-    ###        action  => 'install'
-    ###      )
-    ###      $target.set_var('agent_action_taken', "install puppet-agent ${target.vars['req_agent_version']} from OS package repo'")
-    ###      $target.set_var('agent_action_result', $result)
-    ###    }
-    ###
-    ###    # Only update if agent is installed, but older than the version we want
-    ###    $upgrade_targets  = $targets.filter |$target| {
-    ###      $target.vars['agent_status'] == 'installed'
-    ###        and versioncmp($target.vars['agent_version'], $agent_version) == -1
-    ###    }
+    $rel_targets.filter |$target| {
+      $target.vars['agent_status'] == 'uninstalled' and $target.vars['agent_repo_pkgver']
+    }.each |$target| {
+      $result = run_task('package::linux', $target,
+        'Install puppet-agent ${agent_version} from OS package repo',
+        name    => 'puppet-agent',
+        version =>  $target.vars['req_agent_version'],
+        action  => 'install'
+      )
+      $target.set_var('agent_action_taken', "install puppet-agent ${target.vars['req_agent_version']} from OS package repo'")
+      $target.set_var('agent_action_result', $result)
     }
+
+    # Only update if agent is installed, but older than the version we want
+    $upgrade_targets  = $targets.filter |$target| {
+      $target.vars['agent_status'] == 'installed'
+        and versioncmp($target.vars['agent_version'], $agent_version) == -1
+    }
+  }
 
   if $method in ['upload', 'repo+upload'] {
     out::message( '==== UPLOAD RPM section' )
@@ -103,22 +105,20 @@ plan simp_bolt::install_puppet_agent (
 
 
   out::message( '==== COMPILE RESULTS section' )
-  $g_results = {
+  $results = {
     'agent_version' => $agent_version,
-  }
-  $t_results = $targets.map |$target| {
-    {
-      'name' => $target.name,
-    } + $target.vars.filter |$k,$v| {
-      $k in ['name', 'agent_action_taken', 'agent_repo_pkgver']
+    'targets'       => $targets.map |$target| {
+      {
+        'name' => $target.name,
+      } + $target.vars
+
+      #.filter |$k,$v| {
+      #  $k in ['name', 'agent_action_taken', 'agent_repo_pkgver']
+      #}
+      # FIXME uncomment after making results less annoying
+      ###+ $target.facts.filter |$k, $v| { $k in ['os'] }
     }
-    # FIXME uncomment after making results less annoying
-    ###+ $target.facts.filter |$k, $v| { $k in ['os'] }
   }
-  out::message( '==== RETURN RESULTS section' )
-  out::message( "===== g_results:\n---\n${g_results}\n---\n")
-  out::message( "===== t_results:\n---\n${t_results}\n---\n")
-  $results = $g_results + { 'targets' => $t_results }
   return( $results )
 
   ###  $el_releases = ['6','7']
