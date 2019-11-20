@@ -16,7 +16,7 @@ plan simp_bolt::install_puppet_agent (
 
   # Set up inventory facts and collect Red Hat nodes
   # ------------------------------------------------
-  run_plan('facts', nodes => $nodes)
+  run_plan('facts', nodes             => $nodes)
   $targets = get_targets($nodes).each |$target| { $target.set_var('agent_action_taken', 'none') }
   $rel_targets = $targets.filter |$target| { facts($target)['os']['family'] == 'RedHat' }
 
@@ -58,11 +58,14 @@ plan simp_bolt::install_puppet_agent (
         #    find latest match in list
         # 3. Otherwise, record that a suitable package wasn't available
         #
-        if $agent_version in $yum_list {
-          out::message("=== ${target.name}: EXACT OS repo match for puppet-agent ${agent_version}")
-          $target.set_var('agent_repo_pkgver', $agent_version)
+        $pkg_agent_version = "${agent_version}.el${facts($target)['os']['release']['major']}"
+        if $pkg_agent_version in $yum_list {
+          out::message("=== ${target.name}: EXACT OS repo match for puppet-agent ${pkg_agent_version}")
+
+          $target.set_var('agent_repo_pkgver', $pkg_agent_version)
         } else {
-          out::message("=== ${target.name}: no exact OS repo match for puppet-agent ${agent_version}")
+          out::message("=== ${target.name}: no exact OS repo match for puppet-agent ${pkg_agent_version}")
+          # TODO try agent_version as a SemVerRange
 
         }
 
@@ -74,35 +77,49 @@ plan simp_bolt::install_puppet_agent (
 
     # Installing a fresh puppet-agent
 
-    $rel_targets.filter |$target| {
-      $target.vars['agent_status'] == 'uninstalled' and $target.vars['agent_repo_pkgver']
-    }.each |$target| {
-      $result = run_task('package::linux', $target,
-        'Install puppet-agent ${agent_version} from OS package repo',
-        name    => 'puppet-agent',
-        version =>  $target.vars['req_agent_version'],
-        action  => 'install'
-      )
-      $target.set_var('agent_action_taken', "install puppet-agent ${target.vars['req_agent_version']} from OS package repo'")
-      $target.set_var('agent_action_result', $result)
+    ###    $rel_targets.filter |$target| {
+    ###      $target.vars['agent_status'] == 'uninstalled' and $target.vars['agent_repo_pkgver']
+    ###    }.each |$target| {
+    ###      $result = run_task('package::linux', $target,
+    ###        'Install puppet-agent ${agent_version} from OS package repo',
+    ###        name    => 'puppet-agent',
+    ###        version =>  $target.vars['req_agent_version'],
+    ###        action  => 'install'
+    ###      )
+    ###      $target.set_var('agent_action_taken', "install puppet-agent ${target.vars['req_agent_version']} from OS package repo'")
+    ###      $target.set_var('agent_action_result', $result)
+    ###    }
+    ###
+    ###    # Only update if agent is installed, but older than the version we want
+    ###    $upgrade_targets  = $targets.filter |$target| {
+    ###      $target.vars['agent_status'] == 'installed'
+    ###        and versioncmp($target.vars['agent_version'], $agent_version) == -1
+    ###    }
     }
-
-    # Only update if agent is installed, but older than the version we want
-    $upgrade_targets  = $targets.filter |$target| {
-      $target.vars['agent_status'] == 'installed'
-        and versioncmp($target.vars['agent_version'], $agent_version) == -1
-    }
-  }
 
   if $method in ['upload', 'repo+upload'] {
     out::message( '==== UPLOAD RPM section' )
   }
 
-  # FIXME uncomment after making results less annoying
-  #$results = $targets.map |$target| {
-  #  $target.vars.filter |$k,$v| { $k in ['agent_action_taken', 'yum_list']  } + $target.facts.filter |$k, $v| { $k in ['os'] }
-  #}
-  #return( $results )
+
+  out::message( '==== COMPILE RESULTS section' )
+  $g_results = {
+    'agent_version' => $agent_version,
+  }
+  $t_results = $targets.map |$target| {
+    {
+      'name' => $target.name,
+    } + $target.vars.filter |$k,$v| {
+      $k in ['name', 'agent_action_taken', 'agent_repo_pkgver']
+    }
+    # FIXME uncomment after making results less annoying
+    ###+ $target.facts.filter |$k, $v| { $k in ['os'] }
+  }
+  out::message( '==== RETURN RESULTS section' )
+  out::message( "===== g_results:\n---\n${g_results}\n---\n")
+  out::message( "===== t_results:\n---\n${t_results}\n---\n")
+  $results = $g_results + { 'targets' => $t_results }
+  return( $results )
 
   ###  $el_releases = ['6','7']
   ###  $el_releases.each |$r| {
@@ -114,7 +131,7 @@ plan simp_bolt::install_puppet_agent (
   ###
   ###    run_task('simp_bolt::payum', $rel_targets,
   ###      'Examine what puppet-agent releases are available via OS package repo',
-  ###      version => "${agent_version}.el${r}"
+  ###      version                    => "${agent_version}.el${r}"
   ###    ).each |$result| {
   ###      $result.target.set_var('repo_puppet_version', $result['_output'])
   ###    }
@@ -125,9 +142,9 @@ plan simp_bolt::install_puppet_agent (
   ###    }
   ###    run_task('package::linux', $yum_fresh_install_rel_targets,
   ###      "Install puppet-agent '${agent_version}.el${r}' from OS package repo",
-  ###      name    => 'puppet-agent',
-  ###      version => "${agent_version}.el${r}",
-  ###      action  => 'install'
+  ###      name                       => 'puppet-agent',
+  ###      version                    => "${agent_version}.el${r}",
+  ###      action                     => 'install'
   ###    )
   ###
   ###    # NOTE: Is it really okay to just install any newer version if the one we wanted wasn't available?
@@ -136,8 +153,8 @@ plan simp_bolt::install_puppet_agent (
   ###    }
   ###    run_task('package::linux', $yum_newer_install_rel_targets,
   ###      "Install (latest available) puppet-agent from OS repo",
-  ###      name    => 'puppet-agent',
-  ###      action  => 'install'
+  ###      name                       => 'puppet-agent',
+  ###      action                     => 'install'
   ###    )
   ###
     ###     # Copy rpm file to target and install if yum does not offer a suitable version
