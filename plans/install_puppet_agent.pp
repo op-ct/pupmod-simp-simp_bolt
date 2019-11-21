@@ -54,6 +54,7 @@
 # @param upload_dirs
 #   TODO
 #
+# - [ ] TODO upgrade, if permitted
 # - [ ] TODO upload files
 # - [ ] TODO code refactor / reuse
 # - [ ] TODO sane reporting
@@ -117,7 +118,7 @@ plan simp_bolt::install_puppet_agent (
 
       if $result.ok {
         $yum_list = $result.value['stdout'].split("\n")
-        debug("+++ yum_list:\n* ${$yum_list.join("\n* " )}")
+        debug("+++ ${target.name}: yum_list:\n* ${$yum_list.join("\n* " )}")
 
         $pkg_agent_version = "${version}.el${facts($target)['os']['release']['major']}"
         if ($pkg_agent_version in $yum_list) {
@@ -137,8 +138,14 @@ plan simp_bolt::install_puppet_agent (
           $yum_list.reverse_each |$repo_pkg_version| {
             $repo_pkg_semver = $repo_pkg_version.regsubst(/-\d+(\.[a-z0-9_-]*)?$/,'')
             if $repo_pkg_semver =~ $version_range {
+              # FIXME bolt plan run simp_bolt::install_puppet_agent -n
+              # target1,target2,target3 version='~> 5.5.0' -v
+              # # => SKIPPED
+              # instead of EXACT MATCH for
+              #   "orig_agent_version": "5.5.17-1.el8",
+              #   "agent_repo_pkgver":  "5.5.17-1.el8",
               out::message(
-                "=== ${target.name}: SemVerRange '${agent_version_range}' \
+                "=== ${target.name}: SemVerRange '${version_range}' \
                 matched puppet-agent '${repo_pkg_version}' in OS repo".regsubst(/ {2,}/,'')
               )
               $target.set_var('agent_repo_pkgver', $repo_pkg_version)
@@ -148,7 +155,7 @@ plan simp_bolt::install_puppet_agent (
           unless $target.vars['agent_repo_pkgver'] {
             out::message( @("MSG"/L)
               === ${target.name}: OS repos didn't provide \
-                a match for puppet-agent version '${agent_version_range}'"
+                a match for puppet-agent version '${version_range}'"
               | MSG
             )
           }
@@ -161,24 +168,47 @@ plan simp_bolt::install_puppet_agent (
     }
 
     # Installing a fresh puppet-agent
-
+    # --------------------------------------------------------------------------
     out::message( '==== YUM REPO Installing a fresh agent' )
-    $rel_targets.filter |$target| {
-      $target.vars['agent_status'] == 'uninstalled' and $target.vars['agent_repo_pkgver']
-    }.each |$target| {
+    $rel_targets.each |$target| {
+      $v = $target.vars.map |$k,$x| { "$k = '$x'" }.join("\n   * ")
+      out::message( "--- ${target}: vars=\n   * ${v}\n" )
+      if $target.vars['agent_status'] == 'uninstalled' and $target.vars['agent_repo_pkgver'] {
+        $verb = 'install'
+      } elsif (
+        $target.vars['agent_status'] == 'installed'
+        and versioncmp($target.vars['orig_agent_version'], $version) == -1
+      ) {
+        $verb = 'upgrade'
+
+        unless $permit_upgrade {
+          $msg = "Upgrade SKIPPED b/c not permitted (to enable, run with permit_upgrade=true)"
+          warning ("!!! ${target}: ${msg}")
+          $target.set_var(
+            'agent_action_taken',
+            "SKIPPED: ${verb} puppet-agent '${target.vars['agent_repo_pkgver']}' from OS package repo"
+          )
+          $target.set_var('agent_action_result',  $msg)
+          next()
+        }
+      } else {
+         out::message( "################# $target: WTF WTF WTF: skipped repo verb" )
+         next()
+      }
+
       $result = catch_errors(['bolt/run-failure']) || {
         run_task('package::linux', $target,
-          "Install puppet-agent '${target.vars['agent_repo_pkgver']}' from OS package repo",
+          "${verb} puppet-agent '${target.vars['agent_repo_pkgver']}' from OS package repo",
           name          => 'puppet-agent',
           version       => $target.vars['agent_repo_pkgver'],
-          action        => 'install',
+          action        => $verb,
           _run_as       => 'root',
           _catch_errors => true,
         )
       }
       $target.set_var(
         'agent_action_taken',
-        "install puppet-agent '${target.vars['agent_repo_pkgver']}' from OS package repo"
+        "${verb} puppet-agent '${target.vars['agent_repo_pkgver']}' from OS package repo"
       )
       out::message(String($result))
       $target.set_var('agent_action_result', $result.to_data)
@@ -186,13 +216,14 @@ plan simp_bolt::install_puppet_agent (
 
     # TODO upgrade
     # TODO reuse package install code?
-    # Only update if agent is installed, but older than the version we want
+    # Only upgrade if agent is installed, but older than the version we want
     $upgrade_targets  = $targets.filter |$target| {
       $target.vars['agent_status'] == 'installed'
         and versioncmp($target.vars['orig_agent_version'], $version) == -1
     }
   }
 
+  # TODO upload
   if $install_method in ['upload', 'repo+upload'] {
     out::message( '==== UPLOAD RPM section' )
   }
