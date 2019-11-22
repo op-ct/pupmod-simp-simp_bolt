@@ -1,5 +1,15 @@
 require 'puppetlabs_spec_helper/module_spec_helper'
 require 'rspec-puppet'
+begin
+  require 'bolt_spec/plans'
+  BoltSpec::Plans.init
+rescue LoadError => e
+  warn e.message
+  warn '','','='*80, 'SKIPPING BOLT TESTS- ensure \'bolt\' gem is intalled (requires Puppet 6+)!'.center(80), '='*80, '',''
+  return
+end
+__END__
+
 require 'simp/rspec-puppet-facts'
 include Simp::RspecPuppetFacts
 
@@ -26,7 +36,7 @@ module_name = File.basename(File.expand_path(File.join(__FILE__,'../..')))
 # You can also create a YAML file that is named the same as your test
 # description with all colons and spaces changed to underscores.
 #
-# Hiera will use this file as it's base of information stacked on top of
+# Hiera will use this file as its base of information stacked on top of
 # 'default.yaml' and <module_name>.yaml per the defaults below.
 #
 # Note: Any colons (:) are replaced with underscores (_) in the class name.
@@ -190,14 +200,5 @@ end
 if ENV['PUPPET_DEBUG']
   Puppet::Util::Log.level = :debug
   Puppet::Util::Log.newdestination(:console)
-end
-
-begin
-  require 'bolt_spec/plans'
-  BoltSpec::Plans.init
-rescue LoadError => e
-  warn e.message
-  warn '','','='*80, 'SKIPPING BOLT TESTS- ensure \'bolt\' gem is intalled (requires Puppet 6+)!'.center(80), '='*80, '',''
-  return
 end
 
