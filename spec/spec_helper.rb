@@ -9,19 +9,6 @@ require 'pathname'
 fixture_path = File.expand_path(File.join(__FILE__, '..', 'fixtures'))
 module_name = File.basename(File.expand_path(File.join(__FILE__,'../..')))
 
-# Add fixture lib dirs to LOAD_PATH. Work-around for PUP-3336
-if Puppet.version < "4.0.0"
-  Dir["#{fixture_path}/modules/*/lib"].entries.each do |lib_dir|
-    $LOAD_PATH << lib_dir
-  end
-end
-
-
-if !ENV.key?( 'TRUSTED_NODE_DATA' )
-  warn '== WARNING: TRUSTED_NODE_DATA is unset, using TRUSTED_NODE_DATA=yes'
-  ENV['TRUSTED_NODE_DATA']='yes'
-end
-
 # This can be used from inside your spec tests to load custom hieradata within
 # any context.
 #
@@ -123,7 +110,8 @@ RSpec.configure do |c|
   }
 
   c.mock_framework = :rspec
-  c.mock_with :mocha
+  c.mock_with :rspec
+
 
   c.module_path = File.join(fixture_path, 'modules')
   c.manifest_dir = File.join(fixture_path, 'manifests')
@@ -203,3 +191,13 @@ if ENV['PUPPET_DEBUG']
   Puppet::Util::Log.level = :debug
   Puppet::Util::Log.newdestination(:console)
 end
+
+begin
+  require 'bolt_spec/plans'
+  BoltSpec::Plans.init
+rescue LoadError => e
+  warn e.message
+  warn '','','='*80, 'SKIPPING BOLT TESTS- ensure \'bolt\' gem is intalled (requires Puppet 6+)!'.center(80), '='*80, '',''
+  return
+end
+

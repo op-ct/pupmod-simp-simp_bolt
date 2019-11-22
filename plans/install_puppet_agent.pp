@@ -54,7 +54,9 @@
 # @param upload_dirs
 #   TODO
 #
-# - [ ] TODO upgrade, if permitted
+# - [.] upgrade, if permitted
+#   - [x] from repo
+#   - [ ] TODO from file
 # - [ ] TODO upload files
 # - [ ] TODO code refactor / reuse
 # - [ ] TODO sane reporting
@@ -138,15 +140,9 @@ plan simp_bolt::install_puppet_agent (
           $yum_list.reverse_each |$repo_pkg_version| {
             $repo_pkg_semver = $repo_pkg_version.regsubst(/-\d+(\.[a-z0-9_-]*)?$/,'')
             if $repo_pkg_semver =~ $version_range {
-              # FIXME bolt plan run simp_bolt::install_puppet_agent -n
-              # target1,target2,target3 version='~> 5.5.0' -v
-              # # => SKIPPED
-              # instead of EXACT MATCH for
-              #   "orig_agent_version": "5.5.17-1.el8",
-              #   "repo_agent_pkgver":  "5.5.17-1.el8",
               out::message(
                 "=== ${target.name}: SemVerRange '${version_range}' \
-                matched puppet-agent '${repo_pkg_version}' in OS repo".regsubst(/ {2,}/,'')
+                  matched puppet-agent '${repo_pkg_version}' in OS repo".regsubst(/ {2,}/,'')
               )
               $target.set_var('repo_agent_pkgver', $repo_pkg_version)
               break()
@@ -156,7 +152,7 @@ plan simp_bolt::install_puppet_agent (
             out::message( @("MSG"/L)
               === ${target.name}: OS repos didn't provide \
                 a match for puppet-agent version '${version_range}'"
-              | MSG
+              | - MSG
             )
           }
         }
@@ -177,8 +173,12 @@ plan simp_bolt::install_puppet_agent (
       # Do Nothing: when best matching repo package is already installed
       # ----------------------------------------------------------------
       if $target.vars['orig_agent_version'] == $target.vars['repo_agent_pkgver'] {
-        $target.set_var('agent_action_taken', 'none')
-        $target.set_var('agent_action_result',  "best matching repo package for '${version}' is already installed (${target.vars['repo_agent_pkgver']})")
+        $target.set_var('agent_action_result',
+          @("MSG"/L)
+          best matching repo package for '${version}' is already installed \
+          (${target.vars['repo_agent_pkgver']})
+          | - MSG
+        )
         next()
 
       # Install: when not installed and a repo package is available
@@ -241,11 +241,8 @@ plan simp_bolt::install_puppet_agent (
   out::message( '==== COMPILE RESULTS section' )
   $results = {
     'orig_agent_version' => $version,
-    'install_method'        => $install_method,
-    'targets'       => Hash($targets.map |$target| {
-      [$target.name, $target.vars]
-      ###+ $target.facts.filter |$k, $v| { $k in ['os'] }
-    })
+    'install_method'     => $install_method,
+    'targets'            => Hash($targets.map |$target| { [$target.name, $target.vars] })
   }
   return( $results )
 
